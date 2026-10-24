@@ -4,12 +4,18 @@ import android.app.Activity
 import android.app.DownloadManager
 import android.content.ContentValues
 import android.content.Intent
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Base64
+import android.view.Gravity
+import android.view.View
 import android.webkit.*
+import android.widget.FrameLayout
+import android.widget.TextView
 import android.widget.Toast
 
 class MainActivity : Activity() {
@@ -21,12 +27,70 @@ class MainActivity : Activity() {
         private const val HOME =
             "https://www.byjin.in/p/byjin-stl-viewer-body-margin-0-padding.html"
         private const val REQ_FILE = 1001
+
+        // Layout width the page is drawn at (like Chrome's "Desktop site").
+        // Smaller number = bigger buttons, larger number = more desktop-like.
+        private const val DESKTOP_WIDTH = 1000
+
+        private val PAGE_JS = """
+(function(){
+  var m=document.querySelector('meta[name=viewport]');
+  if(!m){m=document.createElement('meta');m.name='viewport';document.head.appendChild(m);}
+  m.setAttribute('content','width=%W%');
+
+  function findPanel(){
+    var all=document.querySelectorAll('h1,h2,h3,h4,div,span,p'),h=null;
+    for(var i=0;i<all.length;i++){
+      var e=all[i];
+      if(e.children.length===0&&e.textContent.trim()==='BYJIN Creator'){h=e;break;}
+    }
+    if(!h)return null;
+    var el=h.parentElement,best=null,vh=window.innerHeight,vw=window.innerWidth;
+    while(el&&el!==document.body&&el!==document.documentElement){
+      var r=el.getBoundingClientRect();
+      if(r.width<vw*0.75&&r.height>vh*0.5){best=el;}
+      el=el.parentElement;
+    }
+    return best;
+  }
+
+  window.__byjinTogglePanel=function(){
+    var p=(window.__byjinPanel&&document.contains(window.__byjinPanel))?window.__byjinPanel:findPanel();
+    if(!p)return 'none';
+    window.__byjinPanel=p;
+    if(!window.__byjinHidden){
+      var r=p.getBoundingClientRect();
+      window.__byjinDir=(r.left+r.width/2>window.innerWidth/2)?1:-1;
+      p.style.transition='transform .25s ease';
+      p.style.transform='translateX('+(window.__byjinDir*105)+'%)';
+      setTimeout(function(){p.style.display='none';window.dispatchEvent(new Event('resize'));},260);
+      window.__byjinHidden=true;
+      return 'hidden';
+    }
+    p.style.display='';
+    p.style.transform='translateX('+(window.__byjinDir*105)+'%)';
+    void p.offsetWidth;
+    p.style.transform='translateX(0)';
+    setTimeout(function(){window.dispatchEvent(new Event('resize'));},60);
+    window.__byjinHidden=false;
+    return 'shown';
+  };
+})();
+""".replace("%W%", DESKTOP_WIDTH.toString())
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         web = WebView(this)
-        setContentView(web)
+        val root = FrameLayout(this)
+        root.addView(
+            web,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        root.addView(buildToggleButton())
+        setContentView(root)
 
         web.settings.apply {
             javaScriptEnabled = true
@@ -36,11 +100,30 @@ class MainActivity : Activity() {
             useWideViewPort = true
             loadWithOverviewMode = true
             mediaPlaybackRequiresUserGesture = false
+            setSupportZoom(true)
+            builtInZoomControls = true
+            displayZoomControls = false
+            // Desktop site: pretend to be desktop Chrome
+            userAgentString = userAgentString
+                .replace(Regex("\\(Linux; Android[^)]*\\)"), "(X11; Linux x86_64)")
+                .replace(" Mobile", "")
         }
 
         web.addJavascriptInterface(Bridge(), "AndroidBridge")
 
         web.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                setImmersive(false)
+            }
+
+            override fun onPageCommitVisible(view: WebView?, url: String?) {
+                web.evaluateJavascript(PAGE_JS, null)
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                web.evaluateJavascript(PAGE_JS, null)
+            }
+
             override fun shouldOverrideUrlLoading(
                 view: WebView, request: WebResourceRequest
             ): Boolean {
@@ -158,6 +241,54 @@ class MainActivity : Activity() {
                 toast("Saved to Downloads/BYJIN/$name")
             } catch (e: Exception) {
                 toast("Save failed: ${e.message}")
+            }
+        }
+    }
+
+    private fun buildToggleButton(): View {
+        val d = resources.displayMetrics.density
+        val size = (52 * d).toInt()
+        return TextView(this).apply {
+            text = "\u2630"
+            setTextColor(Color.WHITE)
+            textSize = 22f
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#E6FF9800"))
+            }
+            elevation = 8 * d
+            layoutParams = FrameLayout.LayoutParams(size, size).apply {
+                gravity = Gravity.BOTTOM or Gravity.START
+                setMargins((16 * d).toInt(), 0, 0, (24 * d).toInt())
+            }
+            setOnClickListener { togglePanel() }
+        }
+    }
+
+    /** Slides the options panel away (or back) and hides the system bars. */
+    private fun togglePanel() {
+        web.evaluateJavascript(
+            "window.__byjinTogglePanel ? window.__byjinTogglePanel() : 'none'"
+        ) { result ->
+            when (result) {
+                "\"hidden\"" -> setImmersive(true)
+                "\"shown\"" -> setImmersive(false)
+                else -> toast("Options panel not found on this page")
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun setImmersive(on: Boolean) {
+        runOnUiThread {
+            window.decorView.systemUiVisibility = if (on) {
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                    View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            } else {
+                View.SYSTEM_UI_FLAG_VISIBLE
             }
         }
     }
