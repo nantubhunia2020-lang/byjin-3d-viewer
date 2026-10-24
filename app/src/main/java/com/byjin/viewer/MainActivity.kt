@@ -3,7 +3,9 @@ package com.byjin.viewer
 import android.app.Activity
 import android.app.DownloadManager
 import android.content.ContentValues
+import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -13,7 +15,15 @@ import android.provider.MediaStore
 import android.util.Base64
 import android.view.Gravity
 import android.view.View
-import android.webkit.*
+import android.webkit.DownloadListener
+import android.webkit.JavascriptInterface
+import android.webkit.MimeTypeMap
+import android.webkit.URLUtil
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -24,15 +34,14 @@ class MainActivity : Activity() {
     private var fileCallback: ValueCallback<Array<Uri>>? = null
 
     companion object {
-        private const val HOME =
-            "https://www.byjin.in/p/byjin-stl-viewer-body-margin-0-padding.html"
+        private const val HOME = "https://www.byjin.in/p/byjin-stl-viewer-body-margin-0-padding.html"
         private const val REQ_FILE = 1001
 
-        // Layout width the page is drawn at (like Chrome's "Desktop site").
+        // Width the page is laid out at (like Chrome's "Desktop site").
         // Smaller number = bigger buttons, larger number = more desktop-like.
         private const val DESKTOP_WIDTH = 1000
 
-        private val PAGE_JS = """
+        private val PAGE_JS: String = """
 (function(){
   var m=document.querySelector('meta[name=viewport]');
   if(!m){m=document.createElement('meta');m.name='viewport';document.head.appendChild(m);}
@@ -81,38 +90,41 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         web = WebView(this)
         val root = FrameLayout(this)
         root.addView(
             web,
             FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
             )
         )
         root.addView(buildToggleButton())
         setContentView(root)
 
-        web.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            allowFileAccess = false
-            allowContentAccess = true
-            useWideViewPort = true
-            loadWithOverviewMode = true
-            mediaPlaybackRequiresUserGesture = false
-            setSupportZoom(true)
-            builtInZoomControls = true
-            displayZoomControls = false
-            // Desktop site: pretend to be desktop Chrome
-            userAgentString = userAgentString
-                .replace(Regex("\\(Linux; Android[^)]*\\)"), "(X11; Linux x86_64)")
-                .replace(" Mobile", "")
-        }
+        val s = web.settings
+        s.javaScriptEnabled = true
+        s.domStorageEnabled = true
+        s.allowFileAccess = false
+        s.allowContentAccess = true
+        s.useWideViewPort = true
+        s.loadWithOverviewMode = true
+        s.mediaPlaybackRequiresUserGesture = false
+        s.setSupportZoom(true)
+        s.builtInZoomControls = true
+        s.displayZoomControls = false
+        // "Desktop site": present ourselves as desktop Chrome
+        val mobileUa: String = s.userAgentString
+        val desktopUa: String = mobileUa
+            .replace(Regex("\\(Linux; Android[^)]*\\)"), "(X11; Linux x86_64)")
+            .replace(" Mobile", "")
+        s.userAgentString = desktopUa
 
         web.addJavascriptInterface(Bridge(), "AndroidBridge")
 
         web.webViewClient = object : WebViewClient() {
-            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 setImmersive(false)
             }
 
@@ -125,13 +137,16 @@ class MainActivity : Activity() {
             }
 
             override fun shouldOverrideUrlLoading(
-                view: WebView, request: WebResourceRequest
+                view: WebView?,
+                request: WebResourceRequest?
             ): Boolean {
+                if (request == null) return false
                 if (!request.isForMainFrame) return false
-                val host = request.url.host ?: return false
+                val target: Uri = request.url
+                val host: String = target.host ?: return false
                 if (host.endsWith("byjin.in")) return false
                 // Open every other site in the browser
-                startActivity(Intent(Intent.ACTION_VIEW, request.url))
+                startActivity(Intent(Intent.ACTION_VIEW, target))
                 return true
             }
         }
@@ -139,150 +154,175 @@ class MainActivity : Activity() {
         web.webChromeClient = object : WebChromeClient() {
             // File picker for loading STL / 3DM files
             override fun onShowFileChooser(
-                w: WebView, cb: ValueCallback<Array<Uri>>, params: FileChooserParams
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: WebChromeClient.FileChooserParams?
             ): Boolean {
-                fileCallback?.onReceiveValue(null)
-                fileCallback = cb
-                val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "*/*" // STL / 3DM have no reliable MIME type
-                    putExtra(
-                        Intent.EXTRA_ALLOW_MULTIPLE,
-                        params.mode == FileChooserParams.MODE_OPEN_MULTIPLE
-                    )
-                }
-                return try {
-                    startActivityForResult(Intent.createChooser(intent, "Select 3D file"), REQ_FILE)
-                    true
+                if (filePathCallback == null) return false
+                fileCallback?.onReceiveValue(arrayOf<Uri>())
+                fileCallback = filePathCallback
+
+                val pick = Intent(Intent.ACTION_GET_CONTENT)
+                pick.addCategory(Intent.CATEGORY_OPENABLE)
+                pick.type = "*/*" // STL / 3DM have no reliable MIME type
+                val multiple = fileChooserParams != null &&
+                    fileChooserParams.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE
+                pick.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple)
+
+                try {
+                    startActivityForResult(Intent.createChooser(pick, "Select 3D file"), REQ_FILE)
                 } catch (e: Exception) {
                     fileCallback = null
-                    false
+                    return false
                 }
+                return true
             }
         }
 
         // Snapshots / exports
-        web.setDownloadListener { url, _, contentDisposition, mime, _ ->
-            handleDownload(url, contentDisposition, mime)
-        }
+        web.setDownloadListener(
+            DownloadListener { url, _, contentDisposition, mimeType, _ ->
+                handleDownload(url, contentDisposition, mimeType)
+            }
+        )
 
-        if (savedInstanceState != null) web.restoreState(savedInstanceState) else web.loadUrl(HOME)
+        if (savedInstanceState != null) {
+            web.restoreState(savedInstanceState)
+        } else {
+            web.loadUrl(HOME)
+        }
     }
 
-    @Deprecated("Deprecated in Java")
+    @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode == REQ_FILE) {
-            fileCallback?.onReceiveValue(
-                WebChromeClient.FileChooserParams.parseResult(resultCode, data)
-            )
+            val cb = fileCallback
             fileCallback = null
+            if (cb != null) {
+                val picked: Array<Uri>? =
+                    WebChromeClient.FileChooserParams.parseResult(resultCode, data)
+                cb.onReceiveValue(picked ?: arrayOf<Uri>())
+            }
         } else {
-            @Suppress("DEPRECATION")
             super.onActivityResult(requestCode, resultCode, data)
         }
     }
 
-    private fun handleDownload(url: String, cd: String?, mime: String?) {
-        val name = URLUtil.guessFileName(url, cd, mime).replace("'", "").replace("\\", "")
-        when {
-            url.startsWith("blob:") -> {
-                val js = """
-                    (function(){
-                      var x=new XMLHttpRequest();
-                      x.open('GET','$url',true);
-                      x.responseType='blob';
-                      x.onload=function(){
-                        var r=new FileReader();
-                        r.onloadend=function(){AndroidBridge.save(r.result,'$name')};
-                        r.readAsDataURL(x.response);
-                      };
-                      x.send();
-                    })();
-                """.trimIndent()
-                web.evaluateJavascript(js, null)
-            }
-            url.startsWith("data:") -> Bridge().save(url, name)
-            else -> {
-                val req = DownloadManager.Request(Uri.parse(url))
-                    .setNotificationVisibility(
-                        DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
-                    )
-                    .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
-                (getSystemService(DOWNLOAD_SERVICE) as DownloadManager).enqueue(req)
-                toast("Downloading $name")
-            }
+    private fun handleDownload(url: String, contentDisposition: String?, mimeType: String?) {
+        val name: String = URLUtil.guessFileName(url, contentDisposition, mimeType)
+            .replace("'", "")
+            .replace("\\", "")
+
+        if (url.startsWith("blob:")) {
+            val js = """
+                (function(){
+                  var x=new XMLHttpRequest();
+                  x.open('GET','$url',true);
+                  x.responseType='blob';
+                  x.onload=function(){
+                    var r=new FileReader();
+                    r.onloadend=function(){AndroidBridge.save(r.result,'$name')};
+                    r.readAsDataURL(x.response);
+                  };
+                  x.send();
+                })();
+            """.trimIndent()
+            web.evaluateJavascript(js, null)
+        } else if (url.startsWith("data:")) {
+            Bridge().save(url, name)
+        } else {
+            val req = DownloadManager.Request(Uri.parse(url))
+            req.setNotificationVisibility(
+                DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+            )
+            req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
+            val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            dm.enqueue(req)
+            toast("Downloading $name")
         }
     }
 
-    private fun toast(msg: String) = runOnUiThread {
-        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+    private fun toast(msg: String) {
+        runOnUiThread {
+            Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+        }
     }
 
     inner class Bridge {
         @JavascriptInterface
         fun save(dataUrl: String, fileName: String) {
             try {
-                val mime = dataUrl.substringAfter("data:").substringBefore(";")
-                    .ifEmpty { "application/octet-stream" }
-                val bytes = Base64.decode(dataUrl.substringAfter(","), Base64.DEFAULT)
-                var name = fileName
+                var mime: String = dataUrl.substringAfter("data:").substringBefore(";")
+                if (mime.isEmpty()) mime = "application/octet-stream"
+                val bytes: ByteArray = Base64.decode(dataUrl.substringAfter(","), Base64.DEFAULT)
+
+                var name: String = fileName
                 if (!name.contains('.')) {
-                    MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
-                        ?.let { name = "$name.$it" }
+                    val ext: String? = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
+                    if (ext != null) name = name + "." + ext
                 }
-                val values = ContentValues().apply {
-                    put(MediaStore.Downloads.DISPLAY_NAME, name)
-                    put(MediaStore.Downloads.MIME_TYPE, mime)
-                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/BYJIN")
-                }
-                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+
+                val values = ContentValues()
+                values.put(MediaStore.Downloads.DISPLAY_NAME, name)
+                values.put(MediaStore.Downloads.MIME_TYPE, mime)
+                values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/BYJIN")
+
+                val uri: Uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                     ?: throw IllegalStateException("Could not create file")
-                contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
-                toast("Saved to Downloads/BYJIN/$name")
+                val out = contentResolver.openOutputStream(uri)
+                    ?: throw IllegalStateException("Could not open file")
+                out.use { stream -> stream.write(bytes) }
+                toast("Saved to Downloads/BYJIN/" + name)
             } catch (e: Exception) {
-                toast("Save failed: ${e.message}")
+                toast("Save failed: " + e.message)
             }
         }
     }
 
     private fun buildToggleButton(): View {
-        val d = resources.displayMetrics.density
-        val size = (52 * d).toInt()
-        return TextView(this).apply {
-            text = "\u2630"
-            setTextColor(Color.WHITE)
-            textSize = 22f
-            gravity = Gravity.CENTER
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#E6FF9800"))
-            }
-            elevation = 8 * d
-            layoutParams = FrameLayout.LayoutParams(size, size).apply {
-                gravity = Gravity.BOTTOM or Gravity.START
-                setMargins((16 * d).toInt(), 0, 0, (24 * d).toInt())
-            }
-            setOnClickListener { togglePanel() }
-        }
+        val d: Float = resources.displayMetrics.density
+        val size: Int = (52 * d).toInt()
+
+        val bg = GradientDrawable()
+        bg.shape = GradientDrawable.OVAL
+        bg.setColor(Color.parseColor("#E6FF9800"))
+
+        val lp = FrameLayout.LayoutParams(size, size)
+        lp.gravity = Gravity.BOTTOM or Gravity.START
+        lp.setMargins((16 * d).toInt(), 0, 0, (24 * d).toInt())
+
+        val button = TextView(this)
+        button.text = "\u2630"
+        button.setTextColor(Color.WHITE)
+        button.textSize = 22f
+        button.gravity = Gravity.CENTER
+        button.background = bg
+        button.elevation = 8 * d
+        button.layoutParams = lp
+        button.setOnClickListener { togglePanel() }
+        return button
     }
 
     /** Slides the options panel away (or back) and hides the system bars. */
     private fun togglePanel() {
         web.evaluateJavascript(
-            "window.__byjinTogglePanel ? window.__byjinTogglePanel() : 'none'"
-        ) { result ->
-            when (result) {
-                "\"hidden\"" -> setImmersive(true)
-                "\"shown\"" -> setImmersive(false)
-                else -> toast("Options panel not found on this page")
+            "window.__byjinTogglePanel ? window.__byjinTogglePanel() : 'none'",
+            ValueCallback<String> { result ->
+                if (result == "\"hidden\"") {
+                    setImmersive(true)
+                } else if (result == "\"shown\"") {
+                    setImmersive(false)
+                } else {
+                    toast("Options panel not found on this page")
+                }
             }
-        }
+        )
     }
 
     @Suppress("DEPRECATION")
     private fun setImmersive(on: Boolean) {
         runOnUiThread {
-            window.decorView.systemUiVisibility = if (on) {
+            val flags: Int = if (on) {
                 View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
                     View.SYSTEM_UI_FLAG_FULLSCREEN or
                     View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
@@ -290,6 +330,7 @@ class MainActivity : Activity() {
             } else {
                 View.SYSTEM_UI_FLAG_VISIBLE
             }
+            window.decorView.systemUiVisibility = flags
         }
     }
 
@@ -298,15 +339,27 @@ class MainActivity : Activity() {
         web.saveState(outState)
     }
 
-    @Deprecated("Deprecated in Java")
+    @Suppress("DEPRECATION")
     override fun onBackPressed() {
-        if (web.canGoBack()) web.goBack() else {
-            @Suppress("DEPRECATION")
+        if (web.canGoBack()) {
+            web.goBack()
+        } else {
             super.onBackPressed()
         }
     }
 
-    override fun onPause() { web.onPause(); super.onPause() }
-    override fun onResume() { super.onResume(); web.onResume() }
-    override fun onDestroy() { web.destroy(); super.onDestroy() }
+    override fun onPause() {
+        web.onPause()
+        super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        web.onResume()
+    }
+
+    override fun onDestroy() {
+        web.destroy()
+        super.onDestroy()
+    }
 }
