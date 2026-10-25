@@ -125,7 +125,7 @@ class MainActivity : Activity() {
 
         web.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                setImmersive(false)
+                setFullscreenMode(false)
             }
 
             override fun onPageCommitVisible(view: WebView?, url: String?) {
@@ -309,9 +309,9 @@ class MainActivity : Activity() {
             "window.__byjinTogglePanel ? window.__byjinTogglePanel() : 'none'",
             ValueCallback<String> { result ->
                 if (result == "\"hidden\"") {
-                    setImmersive(true)
+                    setFullscreenMode(true)
                 } else if (result == "\"shown\"") {
-                    setImmersive(false)
+                    setFullscreenMode(false)
                 } else {
                     toast("Options panel not found on this page")
                 }
@@ -320,7 +320,7 @@ class MainActivity : Activity() {
     }
 
     @Suppress("DEPRECATION")
-    private fun setImmersive(on: Boolean) {
+    private fun setFullscreenMode(on: Boolean) {
         runOnUiThread {
             val flags: Int = if (on) {
                 View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
