@@ -12,7 +12,25 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
-      - run: gradle assembleDebug
+      - name: Build
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle assembleDebug --console=plain 2>&1 | tee build.log
+      - name: Show errors
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo '### Compile errors'
+            echo '```'
+            grep -E '^e: ' build.log | head -40 || true
+            echo '```'
+            echo '### Last lines of the log'
+            echo '```'
+            tail -n 40 build.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: BYJIN-3D-Viewer-apk
