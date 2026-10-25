@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.util.Base64
 import android.view.Gravity
 import android.view.View
@@ -22,16 +23,22 @@ import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
+import java.io.File
+import java.io.FileInputStream
 
 class MainActivity : Activity() {
 
     private lateinit var web: WebView
     private var fileCallback: ValueCallback<Array<Uri>>? = null
+    private var pageLoaded = false
+    private var incomingFile: File? = null
+    private var pendingName: String? = null
 
     companion object {
         private const val HOME = "https://www.byjin.in/p/byjin-stl-viewer-body-margin-0-padding.html"
@@ -86,6 +93,41 @@ class MainActivity : Activity() {
   };
 })();
 """.replace("%W%", DESKTOP_WIDTH.toString())
+
+        // Hands a file opened from outside the app (e.g. a file manager) to the page,
+        // as if the user had picked it with the page's own file button.
+        private val IMPORT_JS: String = """
+(function(){
+  var NAME='%NAME%';
+  function report(s){try{AndroidBridge.importResult(s);}catch(e){}}
+  function pickInput(){
+    var list=document.querySelectorAll('input[type=file]'),fallback=null;
+    for(var i=0;i<list.length;i++){
+      var a=(list[i].getAttribute('accept')||'').toLowerCase();
+      if(a.indexOf('stl')>=0||a.indexOf('3dm')>=0)return list[i];
+      if(!fallback)fallback=list[i];
+    }
+    return fallback;
+  }
+  fetch('/__byjin_app_file__/'+Date.now()).then(function(r){return r.blob();}).then(function(b){
+    var f=new File([b],NAME,{type:'application/octet-stream'});
+    var tries=0;
+    (function attempt(){
+      var inp=pickInput();
+      if(!inp){
+        if(++tries<12){setTimeout(attempt,500);}else{report('noinput');}
+        return;
+      }
+      var dt=new DataTransfer();
+      dt.items.add(f);
+      inp.files=dt.files;
+      inp.dispatchEvent(new Event('input',{bubbles:true}));
+      inp.dispatchEvent(new Event('change',{bubbles:true}));
+      report('ok');
+    })();
+  }).catch(function(e){report('error: '+e);});
+})();
+"""
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -125,6 +167,7 @@ class MainActivity : Activity() {
 
         web.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                pageLoaded = false
                 setFullscreenMode(false)
             }
 
@@ -133,7 +176,33 @@ class MainActivity : Activity() {
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
+                pageLoaded = true
                 web.evaluateJavascript(PAGE_JS, null)
+                if (pendingName != null) {
+                    // give the page's own scripts a moment to start
+                    web.postDelayed(Runnable { importPending() }, 1200L)
+                }
+            }
+
+            // Serves the file opened from outside the app to the page (same origin)
+            override fun shouldInterceptRequest(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): WebResourceResponse? {
+                val req = request ?: return null
+                val path: String = req.url.path ?: return null
+                if (path.startsWith("/__byjin_app_file__/")) {
+                    val f = incomingFile
+                    if (f != null && f.exists()) {
+                        val headers = HashMap<String, String>()
+                        headers["Access-Control-Allow-Origin"] = "*"
+                        headers["Cache-Control"] = "no-store"
+                        return WebResourceResponse(
+                            "application/octet-stream", null, 200, "OK", headers, FileInputStream(f)
+                        )
+                    }
+                }
+                return null
             }
 
             override fun shouldOverrideUrlLoading(
@@ -191,6 +260,70 @@ class MainActivity : Activity() {
         } else {
             web.loadUrl(HOME)
         }
+
+        if (savedInstanceState == null) {
+            handleIncomingIntent(intent)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    /** Called when the user taps an STL / 3D file anywhere on the phone and picks this app. */
+    private fun handleIncomingIntent(incoming: Intent?) {
+        if (incoming == null) return
+        if (incoming.action != Intent.ACTION_VIEW) return
+        val uri: Uri = incoming.data ?: return
+        toast("Opening 3D file...")
+        Thread {
+            try {
+                var name: String = uri.lastPathSegment ?: "model.stl"
+                try {
+                    val cursor = contentResolver.query(
+                        uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+                    )
+                    if (cursor != null) {
+                        cursor.use { c ->
+                            if (c.moveToFirst()) {
+                                val n: String? = c.getString(0)
+                                if (n != null && n.isNotEmpty()) name = n
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    // keep the fallback name
+                }
+                val out = File(cacheDir, "incoming_model.bin")
+                val input = contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("Cannot read the file")
+                input.use { i ->
+                    out.outputStream().use { o -> i.copyTo(o) }
+                }
+                runOnUiThread {
+                    incomingFile = out
+                    pendingName = name
+                    if (pageLoaded) {
+                        web.postDelayed(Runnable { importPending() }, 600L)
+                    }
+                }
+            } catch (e: Exception) {
+                toast("Could not open the file: " + e.message)
+            }
+        }.start()
+    }
+
+    private fun importPending() {
+        val name: String = pendingName ?: return
+        if (incomingFile == null) return
+        pendingName = null
+        val safe: String = name
+            .replace("\\", "")
+            .replace("'", "")
+            .replace("\n", " ")
+            .replace("\r", " ")
+        web.evaluateJavascript(IMPORT_JS.replace("%NAME%", safe), null)
     }
 
     @Suppress("DEPRECATION")
@@ -249,6 +382,16 @@ class MainActivity : Activity() {
     }
 
     inner class Bridge {
+        @JavascriptInterface
+        fun importResult(result: String) {
+            if (result == "ok") return
+            if (result == "noinput") {
+                toast("Could not find the file button on the page")
+            } else {
+                toast("Could not load the file: " + result)
+            }
+        }
+
         @JavascriptInterface
         fun save(dataUrl: String, fileName: String) {
             try {
