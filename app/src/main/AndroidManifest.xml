@@ -14,10 +14,73 @@
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTask">
+
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- "Open with": files that Android already knows are 3D models -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="model/stl" />
+                <data android:mimeType="model/x.stl-binary" />
+                <data android:mimeType="model/x.stl-ascii" />
+                <data android:mimeType="application/sla" />
+                <data android:mimeType="application/vnd.ms-pki.stl" />
+                <data android:mimeType="application/x-navistyle" />
+                <data android:mimeType="model/*" />
+            </intent-filter>
+
+            <!-- "Open with": any file whose name ends in .stl or .3dm -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:mimeType="*/*" />
+                <data android:pathPattern=".*\\.stl" />
+                <data android:pathPattern=".*\\..*\\.stl" />
+                <data android:pathPattern=".*\\..*\\..*\\.stl" />
+                <data android:pathPattern=".*\\.STL" />
+                <data android:pathPattern=".*\\..*\\.STL" />
+                <data android:pathPattern=".*\\..*\\..*\\.STL" />
+                <data android:pathPattern=".*\\.3dm" />
+                <data android:pathPattern=".*\\..*\\.3dm" />
+                <data android:pathPattern=".*\\..*\\..*\\.3dm" />
+                <data android:pathPattern=".*\\.3DM" />
+                <data android:pathPattern=".*\\..*\\.3DM" />
+                <data android:pathPattern=".*\\..*\\..*\\.3DM" />
+            </intent-filter>
+
+            <!-- "Open with": same as above, for files that arrive with no type at all -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:pathPattern=".*\\.stl" />
+                <data android:pathPattern=".*\\..*\\.stl" />
+                <data android:pathPattern=".*\\..*\\..*\\.stl" />
+                <data android:pathPattern=".*\\.STL" />
+                <data android:pathPattern=".*\\..*\\.STL" />
+                <data android:pathPattern=".*\\..*\\..*\\.STL" />
+                <data android:pathPattern=".*\\.3dm" />
+                <data android:pathPattern=".*\\..*\\.3dm" />
+                <data android:pathPattern=".*\\..*\\..*\\.3dm" />
+                <data android:pathPattern=".*\\.3DM" />
+                <data android:pathPattern=".*\\..*\\.3DM" />
+                <data android:pathPattern=".*\\..*\\..*\\.3DM" />
             </intent-filter>
         </activity>
     </application>
